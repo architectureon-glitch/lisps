@@ -32,6 +32,7 @@
              "archi/surf.lsp"
              "prod/mesures.lsp"
              "prod/renum.lsp"
+             "prod/arrayorbit.lsp"
              "topo/topo.lsp"
             )
   (lb:charger f)
