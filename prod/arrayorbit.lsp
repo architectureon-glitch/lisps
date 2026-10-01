@@ -1,25 +1,34 @@
 ;;; ===========================================================================
-;;;  ARRAYORBIT.LSP  -  Reseau orbital 3D hierarchique (inspire de ARRAYROT)
+;;;  ARRAYORBIT.LSP  -  Reseau orbital 3D : Lune -> Terre -> Soleil
+;;;  (inspire de ARRAYROT)
 ;;;
 ;;;  Commande : ARRAYORBIT   (raccourci : AORB)
 ;;;
-;;;  On construit du plus interieur vers le plus exterieur
-;;;  (Lune -> Terre -> Soleil). A chaque NIVEAU :
-;;;    1. objets qui orbitent  (niveau 1 : la Lune ; niveau 2 : la Terre ...)
-;;;    2. axe de rotation      (niveau 1 : axe de la Terre ; niveau 2 : axe du
-;;;                             Soleil ...) : X/Y/Z + point, 2 points, ligne
-;;;                             existante, ou Memoire (dernier axe utilise)
-;;;    3. l'axe : FIXE ou SUIT la rotation
-;;;         Fixe : les objets gardent leur orientation (translation sur l'orbite,
-;;;                comme l'inclinaison de la Terre face aux etoiles)
-;;;         Suit : tout l'ensemble pivote avec l'orbite (la Lune montre toujours
-;;;                la meme face a la Terre)
-;;;    4. nombre TOTAL d'elements (original + copies : 11 = original + 10)
-;;;    5. angle total sur lequel les elements sont repartis
-;;;  Puis : ajouter un niveau superieur ? L'ensemble deja construit (copies
-;;;  comprises) est alors copie d'un bloc autour du nouvel axe.
+;;;  L'ensemble TERRE + LUNE est copie N fois autour de l'axe du SOLEIL.
+;;;  Pour la copie numero i (0 = original, puis 1, 2 ... N-1) :
+;;;    - la Lune a tourne de  i x (angle Lune)  autour de son axe
+;;;      (son orbite autour de la Terre) ;
+;;;    - la Terre a tourne de i x (angle Terre) sur son propre axe ;
+;;;    - l'ensemble Terre + Lune est place a i x (pas) autour de l'axe du
+;;;      Soleil, le pas venant de l'angle total et du nombre d'elements.
 ;;;
-;;;  - Reseau non associatif ; les objets selectionnes restent le 1er element
+;;;  Deroulement (de la Lune vers le Soleil) :
+;;;    LUNE   : objets (Entree = pas de Lune), axe, Fixe/Suit, angle par copie
+;;;    TERRE  : objets, axe, Fixe/Suit, angle par copie
+;;;    SOLEIL : axe, nombre total (original + copies), angle total
+;;;
+;;;  Axes : X/Y/Z du SCU + point de passage, 2 points, ligne existante,
+;;;         Lune (la Terre reprend l'axe de la Lune), Memoire (dernier axe).
+;;;
+;;;  Fixe / Suit :
+;;;    Lune   Fixe : la Lune garde son orientation en tournant autour de la Terre
+;;;           Suit : la Lune pivote avec son orbite (meme face vers la Terre)
+;;;    Terre  Fixe : l'axe de la Terre reste parallele a lui-meme autour du
+;;;                  Soleil (comme l'inclinaison reelle de la Terre)
+;;;           Suit : l'ensemble Terre + Lune pivote avec l'orbite du Soleil
+;;;
+;;;  - 11 elements = original + 10 copies
+;;;  - Reseau non associatif ; les objets selectionnes restent l'element 0
 ;;;  - Un seul U annule tout le reseau
 ;;;  - Dernieres valeurs memorisees (Entree = valeur precedente)
 ;;; ===========================================================================
@@ -52,18 +61,22 @@
       (princ (strcat "\n** Erreur : " msg " **")))
     (princ)))
 
-(lb:enregistrer "AORB" "Reseau orbital 3D par niveaux (Lune -> Terre -> Soleil), axe fixe/suit")
+(lb:enregistrer "AORB" "Terre + Lune copiees autour du Soleil (Lune et Terre tournent a chaque copie)")
 
 ;;; --- Valeurs par defaut ----------------------------------------------------
-(or lb:*aorb-mode* (setq lb:*aorb-mode* "Fixe"))
-(or lb:*aorb-nb*   (setq lb:*aorb-nb*   11))
-(or lb:*aorb-fill* (setq lb:*aorb-fill* 360.0))
+(or lb:*aorb-mode-lune*  (setq lb:*aorb-mode-lune*  "Suit"))
+(or lb:*aorb-mode-terre* (setq lb:*aorb-mode-terre* "Fixe"))
+(or lb:*aorb-rot-lune*   (setq lb:*aorb-rot-lune*   30.0))
+(or lb:*aorb-rot-terre*  (setq lb:*aorb-rot-terre*  0.0))
+(or lb:*aorb-nb*         (setq lb:*aorb-nb*         11))
+(or lb:*aorb-fill*       (setq lb:*aorb-fill*       360.0))
 
 ;;; --- Algebre vectorielle 3D --------------------------------------------------
 (defun aorb:v+ (a b) (mapcar '+ a b))
 (defun aorb:v- (a b) (mapcar '- a b))
 (defun aorb:v* (k v) (mapcar '(lambda (x) (* k x)) v))
 (defun aorb:dot (a b) (apply '+ (mapcar '* a b)))
+(defun aorb:rad (deg) (* pi (/ deg 180.0)))
 
 (defun aorb:cross (a b)
   (list (- (* (cadr a) (caddr b)) (* (caddr a) (cadr b)))
@@ -85,22 +98,30 @@
 (defun aorb:rotpt (p c k a)
   (aorb:v+ c (aorb:rotvec (aorb:v- p c) k a)))
 
-;;; --- Saisie de l'axe (resultat en SCG dans lb:*aorb-c* / lb:*aorb-a*) --------
-(defun aorb:axe (lab / ok r c p1 p2 e d)
+;;; --- Saisie d'un axe -> (point direction) en SCG -----------------------------
+;;;  LAB   : texte de la question
+;;;  DEFPT : point de passage par defaut (SCG) pour X/Y/Z, ou nil
+;;;  MEM   : dernier axe de ce role (option Memoire), ou nil
+;;;  ALT   : axe de la Lune (option Lune), ou nil
+(defun aorb:axe (lab defpt mem alt / ok r c p1 p2 e d res)
   (while (not ok)
-    (initget "X Y Z Points Objet Memoire")
-    (setq r (getkword (strcat "\nAxe de rotation " lab " [X/Y/Z/Points/Objet/Memoire] <Z> : ")))
+    (initget (strcat "X Y Z Points Objet" (if alt " Lune" "") (if mem " Memoire" "")))
+    (setq r (getkword (strcat "\n" lab " [X/Y/Z/Points/Objet"
+                              (if alt "/Lune" "") (if mem "/Memoire" "") "] <Z> : ")))
     (cond
       ;; X / Y / Z du SCU courant + point de passage
       ((or (null r) (member r '("X" "Y" "Z")))
-       (initget 1)
-       (setq c (getpoint "\nPoint de passage de l'axe : "))
-       (setq lb:*aorb-c* (trans c 1 0)
-             lb:*aorb-a* (aorb:unit
-                           (trans (cond ((= r "X") '(1.0 0.0 0.0))
-                                        ((= r "Y") '(0.0 1.0 0.0))
-                                        (T '(0.0 0.0 1.0)))
-                                  1 0 T))
+       (if defpt
+         (setq c (getpoint "\nPoint de passage de l'axe <centre de l'objet> : "))
+         (progn
+           (initget 1)
+           (setq c (getpoint "\nPoint de passage de l'axe : "))))
+       (setq res (list (if c (trans c 1 0) defpt)
+                       (aorb:unit
+                         (trans (cond ((= r "X") '(1.0 0.0 0.0))
+                                      ((= r "Y") '(0.0 1.0 0.0))
+                                      (T '(0.0 0.0 1.0)))
+                                1 0 T)))
              ok T))
       ;; 2 points
       ((= r "Points")
@@ -109,22 +130,35 @@
        (initget 1)
        (setq p2 (trans (getpoint (trans p1 0 1) "\nSecond point de l'axe : ") 1 0))
        (if (setq d (aorb:unit (aorb:v- p2 p1)))
-         (setq lb:*aorb-c* p1 lb:*aorb-a* d ok T)
+         (setq res (list p1 d) ok T)
          (princ "\nPoints confondus.")))
       ;; Ligne existante
       ((= r "Objet")
        (if (and (setq e (entsel "\nSelectionnez une ligne : "))
                 (= "LINE" (cdr (assoc 0 (setq e (entget (car e)))))))
          (if (setq d (aorb:unit (aorb:v- (cdr (assoc 11 e)) (cdr (assoc 10 e)))))
-           (setq lb:*aorb-c* (cdr (assoc 10 e)) lb:*aorb-a* d ok T)
+           (setq res (list (cdr (assoc 10 e)) d) ok T)
            (princ "\nLigne de longueur nulle."))
          (princ "\nObjet non valide : une LIGNE est attendue.")))
-      ;; Dernier axe utilise
-      ((= r "Memoire")
-       (if (and lb:*aorb-c* lb:*aorb-a*)
-         (setq ok T)
-         (princ "\nAucun axe en memoire.")))))
-  T)
+      ;; Meme axe que la Lune
+      ((= r "Lune") (setq res alt ok T))
+      ;; Dernier axe utilise pour ce role
+      ((= r "Memoire") (setq res mem ok T))))
+  res)
+
+;;; --- Question Fixe / Suit ------------------------------------------------------
+(defun aorb:mode (msg def)
+  (initget "Fixe Suit")
+  (cond ((getkword (strcat "\n" msg " [Fixe/Suit la rotation] <" def "> : ")))
+        (def)))
+
+;;; --- Saisie numerique avec valeur par defaut -------------------------------------
+(defun aorb:getnum (msg def kind bits / r)
+  (initget bits)
+  (setq r (if (= kind 'int)
+            (getint  (strcat "\n" msg " <" (itoa def) "> : "))
+            (getreal (strcat "\n" msg " <" (rtos def 2 2) "> : "))))
+  (if r r def))
 
 ;;; --- Utilitaires repris d'ARRAYROT -------------------------------------------
 (defun aorb:ss->lst (ss / i l)
@@ -142,13 +176,13 @@
             mx (if mx (mapcar 'max mx b) b))))
   (if mn (mapcar '(lambda (u v) (/ (+ u v) 2.0)) mn mx)))
 
-(defun aorb:defbase (objs / o)
+;; Point de base : insertion si bloc unique, sinon centre de l'emprise
+(defun aorb:base (objs / o)
   (setq o (car objs))
   (if (and (= 1 (length objs))
            (= "AcDbBlockReference" (vla-get-ObjectName o)))
-    (list (vlax-safearray->list (vlax-variant-value (vla-get-InsertionPoint o)))
-          "Insertion")
-    (list (aorb:centre objs) "Centre")))
+    (vlax-safearray->list (vlax-variant-value (vla-get-InsertionPoint o)))
+    (aorb:centre objs)))
 
 (defun aorb:copie (doc spc objs)
   (vlax-safearray->list
@@ -160,48 +194,31 @@
             objs))
         spc))))
 
-;;; --- Rotation 3D d'un objet autour de la droite (PT, PT + DIR) ---------------
+;;; --- Transformations -----------------------------------------------------------
+
+;; Rotation 3D d'un objet autour de la droite (PT, PT + DIR)
 (defun aorb:rot3 (o pt dir ang)
-  (if (not (equal ang 0.0 1e-10))
+  (if (not (equal ang 0.0 1e-12))
     (vla-Rotate3D o (vlax-3d-point pt) (vlax-3d-point (aorb:v+ pt dir)) ang)))
 
-(defun aorb:getnum (msg def kind bits / r)
-  (initget bits)
-  (setq r (cond ((= kind 'int)  (getint  (strcat "\n" msg " <" (itoa def) "> : ")))
-                ((= kind 'dist) (getdist (strcat "\n" msg " <" (rtos def 2 4) "> : ")))
-                (T              (getreal (strcat "\n" msg " <" (rtos def 2 4) "> : ")))))
-  (if r r def))
-
-;;; --- Un niveau : copie ALL (n-1 fois) autour de l'axe (C, A) ---------------------
-;;; Retourne la liste des objets d'origine + toutes les copies.
-(defun aorb:niveau (doc spc all c a suit base n stp / i cp phi d new)
-  (setq i 1)
-  (while (< i n)
-    (setq phi (* i stp)
-          cp  (aorb:copie doc spc all))
+;; Fait tourner OBJS autour de l'axe AXE = (point direction) d'un angle ANG.
+;;  SUIT = T   : les objets pivotent (rotation rigide autour de l'axe)
+;;  SUIT = nil : orientation conservee, translation du point de base B
+(defun aorb:orbite (objs b axe ang suit / d p0 p1)
+  (if (and objs (not (equal ang 0.0 1e-12)))
     (if suit
-      ;; l'ensemble pivote autour de l'axe
-      (foreach o cp (aorb:rot3 o c a phi))
-      ;; orientation conservee : simple translation du point de base
+      (foreach o objs (aorb:rot3 o (car axe) (cadr axe) ang))
       (progn
-        (setq d (aorb:v- (aorb:rotpt base c a phi) base))
-        (foreach o cp
-          (vla-Move o (vlax-3d-point '(0.0 0.0 0.0)) (vlax-3d-point d)))))
-    (setq new (append new cp)
-          i   (1+ i)))
-  (append all new))
-
-(defun aorb:nom-corps (k)
-  (nth (min (1- k) 2) '("la Lune" "la Terre" "le Soleil")))
-
-(defun aorb:nom-axe (k)
-  (nth (min (1- k) 2) '("l'axe de la Terre" "l'axe du Soleil" "l'axe central")))
+        (setq d  (aorb:v- (aorb:rotpt b (car axe) (cadr axe) ang) b)
+              p0 (vlax-3d-point '(0.0 0.0 0.0))
+              p1 (vlax-3d-point d))
+        (foreach o objs (vla-Move o p0 p1))))))
 
 ;;; ===========================================================================
 ;;;  COMMANDE PRINCIPALE
 ;;; ===========================================================================
-(defun c:ARRAYORBIT (/ *error* doc spc grp body hs ss db base c a suit n stp
-                       k encore r rayon v)
+(defun c:ARRAYORBIT (/ *error* doc spc ss lune terre hs bl bt axl axt axs
+                       suitl suitt al at n stp i cl ct)
 
   (defun *error* (msg) (lb:fin msg))
   (lb:debut '("CMDECHO"))
@@ -209,75 +226,77 @@
   (setq doc (lb:doc)
         spc (if (= 1 (getvar "CVPORT"))
               (vla-get-PaperSpace doc)
-              (vla-get-ModelSpace doc))
-        k 0
-        encore T)
+              (vla-get-ModelSpace doc)))
 
-  (while encore
-    (setq k (1+ k))
-    (princ (strcat "\n--- Niveau " (itoa k) " ---"))
+  ;; ============================ LUNE ===========================================
+  (princ "\n=== LUNE ===")
+  (princ "\nSelectionnez la Lune <Aucune> :")
+  (if (setq ss (ssget "_:L"))
+    (progn
+      (setq lune (aorb:ss->lst ss)
+            bl   (aorb:base lune)
+            axl  (aorb:axe "Axe de la Lune (son orbite autour de la Terre)"
+                           nil lb:*aorb-axe-lune* nil)
+            lb:*aorb-axe-lune* axl
+            lb:*aorb-mode-lune* (aorb:mode "La Lune" lb:*aorb-mode-lune*)
+            suitl (= lb:*aorb-mode-lune* "Suit")
+            lb:*aorb-rot-lune* (aorb:getnum "Rotation de la Lune autour de la Terre, par copie (degres)"
+                                            lb:*aorb-rot-lune* 'real 0)
+            al   (aorb:rad lb:*aorb-rot-lune*))))
 
-    ;; --- 1. Objets qui orbitent -----------------------------------------------
-    ;; Niveau 2+ : Entree = faire tourner l'ensemble deja construit, sans ajout
-    (princ (strcat "\nSelectionnez les objets qui orbitent (ex. " (aorb:nom-corps k) ")"
-                   (if grp " <Entree = ensemble deja construit seul>" "")
-                   " :"))
-    (setq ss (ssget "_:L"))
-    (if (and (not ss) (not grp)) (exit))
-    (setq hs   (mapcar 'vla-get-Handle grp)
-          body (if ss
-                 (vl-remove-if '(lambda (o) (member (vla-get-Handle o) hs))
-                               (aorb:ss->lst ss))))
-    (if (and ss (not body))
-      (princ "\nCes objets font deja partie du reseau : ensemble existant seul."))
-    ;; point de base : centre des nouveaux objets (ou de l'ensemble existant)
-    (setq db   (aorb:defbase (if body body grp))
-          base (car db))
+  ;; ============================ TERRE ==========================================
+  (princ "\n=== TERRE ===")
+  (princ "\nSelectionnez la Terre :")
+  (if (not (setq ss (ssget "_:L"))) (exit))
+  (setq hs    (mapcar 'vla-get-Handle lune)
+        terre (vl-remove-if '(lambda (o) (member (vla-get-Handle o) hs))
+                            (aorb:ss->lst ss)))
+  (if (not terre)
+    (progn (princ "\nLa Terre doit contenir d'autres objets que la Lune.") (exit)))
+  (setq bt  (aorb:base terre)
+        axt (aorb:axe "Axe de la Terre" bt lb:*aorb-axe-terre* axl)
+        lb:*aorb-axe-terre* axt
+        lb:*aorb-mode-terre* (aorb:mode "L'axe de la Terre autour du Soleil" lb:*aorb-mode-terre*)
+        suitt (= lb:*aorb-mode-terre* "Suit")
+        lb:*aorb-rot-terre* (aorb:getnum "Rotation de la Terre sur son axe, par copie (degres, 0 = aucune)"
+                                         lb:*aorb-rot-terre* 'real 0)
+        at  (aorb:rad lb:*aorb-rot-terre*))
 
-    ;; --- 2. Axe -------------------------------------------------------------------
-    (aorb:axe (strcat "(ex. " (aorb:nom-axe k) ")"))
-    (setq c lb:*aorb-c*
-          a lb:*aorb-a*
-          v (aorb:v- base c)
-          rayon (sqrt (aorb:dot (aorb:v- v (aorb:v* (aorb:dot v a) a))
-                                (aorb:v- v (aorb:v* (aorb:dot v a) a)))))
+  ;; ============================ SOLEIL =========================================
+  (princ "\n=== SOLEIL ===")
+  (setq axs (aorb:axe "Axe du Soleil" nil lb:*aorb-axe-soleil* nil)
+        lb:*aorb-axe-soleil* axs)
 
-    ;; --- 3. Fixe / Suit ----------------------------------------------------------------
-    (initget "Fixe Suit")
-    (setq lb:*aorb-mode*
-           (cond ((getkword (strcat "\nL'axe [Fixe/Suit la rotation] <" lb:*aorb-mode* "> : ")))
-                 (lb:*aorb-mode*))
-          suit (= lb:*aorb-mode* "Suit"))
-    (if (and (not suit) (< rayon 1e-9))
-      (princ "\nAttention : objets centres sur l'axe en mode Fixe, les copies seront superposees."))
+  (setq n (aorb:getnum "Nombre total Terre+Lune (original + copies)" lb:*aorb-nb* 'int 6))
+  (while (> (* (1- n) (+ (length terre) (length lune))) 20000)
+    (princ "\nTrop d'objets a creer (limite 20000).")
+    (setq n (aorb:getnum "Nombre total Terre+Lune (original + copies)" 2 'int 6)))
+  (setq lb:*aorb-nb* n)
+  (princ (strcat "  -> original + " (itoa (1- n)) " copie(s)"))
 
-    ;; --- 4. Nombre total (original + copies) ---------------------------------------
-    (setq n (aorb:getnum "Nombre total d'elements (original + copies)" lb:*aorb-nb* 'int 6))
-    (while (> (* n (+ (length grp) (length body))) 20000)
-      (princ "\nTrop d'objets (limite 20000).")
-      (setq n (aorb:getnum "Nombre total d'elements (original + copies)" 2 'int 6)))
-    (setq lb:*aorb-nb* n)
-    (princ (strcat "  -> " (itoa (1- n)) " copie(s)"))
+  (setq lb:*aorb-fill* (aorb:getnum "Angle total autour du Soleil en degres (+ = trigo, - = horaire)"
+                                    lb:*aorb-fill* 'real 2)
+        lb:*aorb-fill* (max -360.0 (min 360.0 lb:*aorb-fill*))
+        stp (cond ((= n 1) 0.0)
+                  ((equal (abs lb:*aorb-fill*) 360.0 1e-9) (/ (aorb:rad lb:*aorb-fill*) n))
+                  (T (/ (aorb:rad lb:*aorb-fill*) (1- n)))))
 
-    ;; --- 5. Angle total -------------------------------------------------------------
-    (setq lb:*aorb-fill* (aorb:getnum "Angle total de repartition en degres (+ = trigo, - = horaire)"
-                                      lb:*aorb-fill* 'real 2)
-          lb:*aorb-fill* (max -360.0 (min 360.0 lb:*aorb-fill*))
-          stp (cond ((= n 1) 0.0)
-                    ((equal (abs lb:*aorb-fill*) 360.0 1e-9)
-                     (/ (* pi (/ lb:*aorb-fill* 180.0)) n))
-                    (T (/ (* pi (/ lb:*aorb-fill* 180.0)) (1- n)))))
+  ;; ============================ CONSTRUCTION ===================================
+  ;; L'original (i = 0) ne bouge pas ; copies i = 1 ... n-1
+  (setq i 1)
+  (while (< i n)
+    (setq cl (if lune (aorb:copie doc spc lune))
+          ct (aorb:copie doc spc terre))
+    ;; 1. la Lune tourne autour de la Terre
+    (aorb:orbite cl bl axl (* i al) suitl)
+    ;; 2. la Terre tourne sur son axe
+    (foreach o ct (aorb:rot3 o (car axt) (cadr axt) (* i at)))
+    ;; 3. l'ensemble Terre + Lune tourne autour du Soleil
+    (aorb:orbite (append ct cl) bt axs (* i stp) suitt)
+    (setq i (1+ i)))
 
-    ;; --- Construction du niveau ------------------------------------------------------
-    (setq grp (aorb:niveau doc spc (append grp body) c a suit base n stp))
-
-    ;; --- Niveau superieur ? ------------------------------------------------------------
-    (initget "Oui Non")
-    (setq r (getkword (strcat "\nAjouter un niveau superieur (ex. " (aorb:nom-corps (1+ k))
-                              " autour de " (aorb:nom-axe (1+ k)) ") [Oui/Non] <Non> : "))
-          encore (= r "Oui")))
-
-  (princ (strcat "\nReseau orbital termine : " (itoa (length grp)) " objet(s) au total."))
+  (princ (strcat "\n" (itoa n) " Terre(s)" (if lune "+Lune" "")
+                 " autour du Soleil (original + " (itoa (1- n)) " copie(s))."))
   (lb:fin nil)
 )
 

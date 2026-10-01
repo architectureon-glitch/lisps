@@ -27,7 +27,7 @@ Bibliothèque de LISP pour AutoCAD (Windows, Visual LISP). Messages en français
 | `LONGT` | Longueur totale des courbes sélectionnées |
 | `SOMTXT` | Somme des nombres contenus dans des textes |
 | `RENUM` | Numérotation incrémentale par clics |
-| `AORB` (`ARRAYORBIT`) | Réseau orbital 3D hiérarchique (Lune → Terre → Soleil) : par niveau, objets, axe (X/Y/Z, 2 points, ligne), axe fixe ou qui suit la rotation, nombre total et angle |
+| `AORB` (`ARRAYORBIT`) | Terre + Lune copiées N fois autour de l'axe du Soleil ; à chaque copie la Lune tourne autour de son axe et la Terre sur le sien (angle par copie) ; axes X/Y/Z, 2 points ou ligne, fixes ou qui suivent la rotation |
 | `ALTI` | Cote d'altitude Z (`+12,35`, `±0,00`) |
 | `PENTE` | Pente en % entre deux points |
 
