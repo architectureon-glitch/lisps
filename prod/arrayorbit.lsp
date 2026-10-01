@@ -1,25 +1,25 @@
 ;;; ===========================================================================
-;;;  ARRAYORBIT.LSP  -  Reseau orbital 3D (inspire de ARRAYROT)
+;;;  ARRAYORBIT.LSP  -  Reseau orbital 3D hierarchique (inspire de ARRAYROT)
 ;;;
 ;;;  Commande : ARRAYORBIT   (raccourci : AORB)
 ;;;
-;;;  Principe (Terre autour du Soleil, Lune autour de la Terre) :
-;;;   - AXE ORBITAL predefini : X / Y / Z (du SCU) + point de passage,
-;;;     2 points, ou une LIGNE existante. "Memoire" reprend le dernier axe.
-;;;   - Les elements tournent autour de cet axe (angle a remplir, N elements).
-;;;   - NIVEAUX : empilement le long de l'axe (pas + decalage angulaire).
-;;;   - Decalage axial par element : helice / spirale.
-;;;   - AXE FIXE  : l'orientation des elements ne change pas, l'axe de
-;;;                 rotation propre reste parallele a lui-meme (la Terre
-;;;                 garde son inclinaison face aux etoiles).
-;;;     AXE SUIT  : l'orientation et l'axe propre tournent avec l'orbite
-;;;                 (la Lune montre toujours la meme face a la Terre).
-;;;   - ROTATION PROPRE : increment d'angle par element autour de l'axe propre,
-;;;     incline d'un angle donne par rapport a l'axe orbital.
-;;;   - SATELLITES : second jeu d'objets (la Lune) qui orbite autour de chaque
-;;;     element ; position de depart = position relative dans le dessin.
+;;;  On construit du plus interieur vers le plus exterieur
+;;;  (Lune -> Terre -> Soleil). A chaque NIVEAU :
+;;;    1. objets qui orbitent  (niveau 1 : la Lune ; niveau 2 : la Terre ...)
+;;;    2. axe de rotation      (niveau 1 : axe de la Terre ; niveau 2 : axe du
+;;;                             Soleil ...) : X/Y/Z + point, 2 points, ligne
+;;;                             existante, ou Memoire (dernier axe utilise)
+;;;    3. l'axe : FIXE ou SUIT la rotation
+;;;         Fixe : les objets gardent leur orientation (translation sur l'orbite,
+;;;                comme l'inclinaison de la Terre face aux etoiles)
+;;;         Suit : tout l'ensemble pivote avec l'orbite (la Lune montre toujours
+;;;                la meme face a la Terre)
+;;;    4. nombre TOTAL d'elements (original + copies : 11 = original + 10)
+;;;    5. angle total sur lequel les elements sont repartis
+;;;  Puis : ajouter un niveau superieur ? L'ensemble deja construit (copies
+;;;  comprises) est alors copie d'un bloc autour du nouvel axe.
 ;;;
-;;;  - Reseau non associatif ; la selection d'origine devient le 1er element
+;;;  - Reseau non associatif ; les objets selectionnes restent le 1er element
 ;;;  - Un seul U annule tout le reseau
 ;;;  - Dernieres valeurs memorisees (Entree = valeur precedente)
 ;;; ===========================================================================
@@ -55,17 +55,9 @@
 (lb:enregistrer "AORB""Reseau orbital 3D autour d'un axe (axe fixe/suit, niveaux, satellites)")
 
 ;;; --- Valeurs par defaut ----------------------------------------------------
-(or lb:*aorb-mode*  (setq lb:*aorb-mode*  "Fixe"))
-(or lb:*aorb-nb*    (setq lb:*aorb-nb*    12))
-(or lb:*aorb-fill*  (setq lb:*aorb-fill*  360.0))
-(or lb:*aorb-nl*    (setq lb:*aorb-nl*    1))
-(or lb:*aorb-dz*    (setq lb:*aorb-dz*    1.0))
-(or lb:*aorb-twist* (setq lb:*aorb-twist* 0.0))
-(or lb:*aorb-hel*   (setq lb:*aorb-hel*   0.0))
-(or lb:*aorb-spin*  (setq lb:*aorb-spin*  0.0))
-(or lb:*aorb-tilt*  (setq lb:*aorb-tilt*  0.0))
-(or lb:*aorb-nm*    (setq lb:*aorb-nm*    1))
-(or lb:*aorb-mstep* (setq lb:*aorb-mstep* 30.0))
+(or lb:*aorb-mode* (setq lb:*aorb-mode* "Fixe"))
+(or lb:*aorb-nb*   (setq lb:*aorb-nb*   11))
+(or lb:*aorb-fill* (setq lb:*aorb-fill* 360.0))
 
 ;;; --- Algebre vectorielle 3D --------------------------------------------------
 (defun aorb:v+ (a b) (mapcar '+ a b))
@@ -93,17 +85,11 @@
 (defun aorb:rotpt (p c k a)
   (aorb:v+ c (aorb:rotvec (aorb:v- p c) k a)))
 
-;; Vecteur unitaire perpendiculaire a l'axe A, dans le plan (A, V) si possible
-(defun aorb:perp (a v / u)
-  (setq u (aorb:unit (aorb:v- v (aorb:v* (aorb:dot v a) a))))
-  (or u
-      (aorb:unit (aorb:cross a (if (< (abs (car a)) 0.9) '(1.0 0.0 0.0) '(0.0 1.0 0.0))))))
-
 ;;; --- Saisie de l'axe (resultat en SCG dans lb:*aorb-c* / lb:*aorb-a*) --------
-(defun aorb:axe (/ ok r c p1 p2 e d)
+(defun aorb:axe (lab / ok r c p1 p2 e d)
   (while (not ok)
     (initget "X Y Z Points Objet Memoire")
-    (setq r (getkword "\nAxe de rotation [X/Y/Z/Points/Objet/Memoire] <Z> : "))
+    (setq r (getkword (strcat "\nAxe de rotation " lab " [X/Y/Z/Points/Objet/Memoire] <Z> : ")))
     (cond
       ;; X / Y / Z du SCU courant + point de passage
       ((or (null r) (member r '("X" "Y" "Z")))
@@ -164,11 +150,6 @@
           "Insertion")
     (list (aorb:centre objs) "Centre")))
 
-(defun aorb:pointbase (msg def lab / p)
-  (initget 0)
-  (setq p (getpoint (strcat "\n" msg " <" lab "> : ")))
-  (if p (trans p 1 0) def))
-
 (defun aorb:copie (doc spc objs)
   (vlax-safearray->list
     (vlax-variant-value
@@ -184,15 +165,6 @@
   (if (not (equal ang 0.0 1e-10))
     (vla-Rotate3D o (vlax-3d-point pt) (vlax-3d-point (aorb:v+ pt dir)) ang)))
 
-;;; --- Place les objets : BP -> PT, orientation autour de OAX, rotation propre -
-(defun aorb:placer (objs bp pt oax oang sax sang / p1 p2)
-  (setq p1 (vlax-3d-point bp)
-        p2 (vlax-3d-point pt))
-  (foreach o objs
-    (if (not (equal bp pt 1e-9)) (vla-Move o p1 p2))
-    (aorb:rot3 o pt oax oang)
-    (aorb:rot3 o pt sax sang)))
-
 (defun aorb:getnum (msg def kind bits / r)
   (initget bits)
   (setq r (cond ((= kind 'int)  (getint  (strcat "\n" msg " <" (itoa def) "> : ")))
@@ -200,12 +172,36 @@
                 (T              (getreal (strcat "\n" msg " <" (rtos def 2 4) "> : ")))))
   (if r r def))
 
+;;; --- Un niveau : copie ALL (n-1 fois) autour de l'axe (C, A) ---------------------
+;;; Retourne la liste des objets d'origine + toutes les copies.
+(defun aorb:niveau (doc spc all c a suit base n stp / i cp phi d new)
+  (setq i 1)
+  (while (< i n)
+    (setq phi (* i stp)
+          cp  (aorb:copie doc spc all))
+    (if suit
+      ;; l'ensemble pivote autour de l'axe
+      (foreach o cp (aorb:rot3 o c a phi))
+      ;; orientation conservee : simple translation du point de base
+      (progn
+        (setq d (aorb:v- (aorb:rotpt base c a phi) base))
+        (foreach o cp
+          (vla-Move o (vlax-3d-point '(0.0 0.0 0.0)) (vlax-3d-point d)))))
+    (setq new (append new cp)
+          i   (1+ i)))
+  (append all new))
+
+(defun aorb:nom-corps (k)
+  (nth (min (1- k) 2) '("la Lune" "la Terre" "le Soleil")))
+
+(defun aorb:nom-axe (k)
+  (nth (min (1- k) 2) '("l'axe de la Terre" "l'axe du Soleil" "l'axe central")))
+
 ;;; ===========================================================================
 ;;;  COMMANDE PRINCIPALE
 ;;; ===========================================================================
-(defun c:ARRAYORBIT (/ *error* doc spc ss ssm objs mobjs db base bm n tot stp nl dz
-                       twist hel spin tilt nm mstep c a suit u s0 offv off
-                       i j k l phi theta pt pm sdir total)
+(defun c:ARRAYORBIT (/ *error* doc spc grp body hs ss db base c a suit n stp
+                       k encore r rayon v)
 
   (defun *error* (msg) (lb:fin msg))
   (lb:debut '("CMDECHO"))
@@ -213,114 +209,69 @@
   (setq doc (lb:doc)
         spc (if (= 1 (getvar "CVPORT"))
               (vla-get-PaperSpace doc)
-              (vla-get-ModelSpace doc)))
+              (vla-get-ModelSpace doc))
+        k 0
+        encore T)
 
-  ;; --- 1. Objets ------------------------------------------------------------
-  (princ "\nSelectionnez les objets a mettre en reseau (la Terre) :")
-  (if (not (setq ss (ssget "_:L"))) (exit))
-  (setq objs (aorb:ss->lst ss))
+  (while encore
+    (setq k (1+ k))
+    (princ (strcat "\n--- Niveau " (itoa k) " ---"))
 
-  ;; --- 2. Axe orbital ---------------------------------------------------------
-  (aorb:axe)
-  (setq c lb:*aorb-c*
-        a lb:*aorb-a*)
+    ;; --- 1. Objets qui orbitent -----------------------------------------------
+    (princ (strcat "\nSelectionnez les objets qui orbitent (ex. " (aorb:nom-corps k) ") :"))
+    (if (not (setq ss (ssget "_:L"))) (exit))
+    (setq hs   (mapcar 'vla-get-Handle grp)
+          body (vl-remove-if '(lambda (o) (member (vla-get-Handle o) hs))
+                             (aorb:ss->lst ss)))
+    (if (not body)
+      (progn (princ "\nCes objets font deja partie du reseau.") (exit)))
+    (setq db   (aorb:defbase body)
+          base (car db))
 
-  ;; --- 3. Mode de l'axe -------------------------------------------------------
-  (initget "Fixe Suit")
-  (setq lb:*aorb-mode*
-         (cond ((getkword (strcat "\nL'axe [Fixe/Suit la rotation] <" lb:*aorb-mode* "> : ")))
-               (lb:*aorb-mode*))
-        suit (= lb:*aorb-mode* "Suit"))
+    ;; --- 2. Axe -------------------------------------------------------------------
+    (aorb:axe (strcat "(ex. " (aorb:nom-axe k) ")"))
+    (setq c lb:*aorb-c*
+          a lb:*aorb-a*
+          v (aorb:v- base c)
+          rayon (sqrt (aorb:dot (aorb:v- v (aorb:v* (aorb:dot v a) a))
+                                (aorb:v- v (aorb:v* (aorb:dot v a) a)))))
+    (if (< rayon 1e-9)
+      (princ "\nAttention : les objets sont sur l'axe (rayon nul), la translation sera nulle."))
 
-  ;; --- 4. Orbite ----------------------------------------------------------------
-  (setq lb:*aorb-nb* (aorb:getnum "Nombre d'elements par orbite" lb:*aorb-nb* 'int 6)
-        n            lb:*aorb-nb*)
-  (setq lb:*aorb-fill* (aorb:getnum "Angle a remplir en degres (+ = trigo, - = horaire)"
-                                    lb:*aorb-fill* 'real 2)
-        lb:*aorb-fill* (max -360.0 (min 360.0 lb:*aorb-fill*))
-        tot (* pi (/ lb:*aorb-fill* 180.0))
-        stp (cond ((= n 1) 0.0)
-                  ((equal (abs lb:*aorb-fill*) 360.0 1e-9) (/ tot n))
-                  (T (/ tot (1- n)))))
+    ;; --- 3. Fixe / Suit ----------------------------------------------------------------
+    (initget "Fixe Suit")
+    (setq lb:*aorb-mode*
+           (cond ((getkword (strcat "\nL'axe [Fixe/Suit la rotation] <" lb:*aorb-mode* "> : ")))
+                 (lb:*aorb-mode*))
+          suit (= lb:*aorb-mode* "Suit"))
 
-  ;; --- 5. Niveaux (3D) et helice ------------------------------------------------
-  (setq lb:*aorb-nl* (aorb:getnum "Nombre de niveaux le long de l'axe" lb:*aorb-nl* 'int 6)
-        nl           lb:*aorb-nl*)
-  (if (> nl 1)
-    (setq lb:*aorb-dz*    (aorb:getnum "Pas entre niveaux (+/- selon le sens de l'axe)"
-                                       lb:*aorb-dz* 'dist 0)
-          lb:*aorb-twist* (aorb:getnum "Decalage angulaire entre niveaux (degres)"
-                                       lb:*aorb-twist* 'real 0)))
-  (setq lb:*aorb-hel* (aorb:getnum "Decalage axial par element (helice)" lb:*aorb-hel* 'dist 0)
-        dz    (if (> nl 1) lb:*aorb-dz* 0.0)
-        twist (if (> nl 1) (* pi (/ lb:*aorb-twist* 180.0)) 0.0)
-        hel   lb:*aorb-hel*)
+    ;; --- 4. Nombre total (original + copies) ---------------------------------------
+    (setq n (aorb:getnum "Nombre total d'elements (original + copies)" lb:*aorb-nb* 'int 6))
+    (while (> (* n (+ (length grp) (length body))) 20000)
+      (princ "\nTrop d'objets (limite 20000).")
+      (setq n (aorb:getnum "Nombre total d'elements (original + copies)" 2 'int 6)))
+    (setq lb:*aorb-nb* n)
+    (princ (strcat "  -> " (itoa (1- n)) " copie(s)"))
 
-  ;; --- 6. Rotation propre -----------------------------------------------------
-  (setq lb:*aorb-spin* (aorb:getnum "Rotation propre par element (degres, 0 = aucune)"
-                                    lb:*aorb-spin* 'real 0)
-        spin (* pi (/ lb:*aorb-spin* 180.0)))
-  (if (/= spin 0.0)
-    (setq lb:*aorb-tilt* (aorb:getnum "Inclinaison de l'axe propre / axe orbital (degres)"
-                                      lb:*aorb-tilt* 'real 0)))
-  (setq tilt (if (/= spin 0.0) (* pi (/ lb:*aorb-tilt* 180.0)) 0.0))
+    ;; --- 5. Angle total -------------------------------------------------------------
+    (setq lb:*aorb-fill* (aorb:getnum "Angle total de repartition en degres (+ = trigo, - = horaire)"
+                                      lb:*aorb-fill* 'real 2)
+          lb:*aorb-fill* (max -360.0 (min 360.0 lb:*aorb-fill*))
+          stp (cond ((= n 1) 0.0)
+                    ((equal (abs lb:*aorb-fill*) 360.0 1e-9)
+                     (/ (* pi (/ lb:*aorb-fill* 180.0)) n))
+                    (T (/ (* pi (/ lb:*aorb-fill* 180.0)) (1- n)))))
 
-  ;; --- 7. Point de base (definit le rayon d'orbite) --------------------------------
-  (setq db   (aorb:defbase objs)
-        base (aorb:pointbase "Point de base des objets (distance a l'axe = rayon)"
-                             (car db) (cadr db)))
-  (if (< (distance base (aorb:rotpt base c a (/ pi 2.0))) 1e-9)
-    (princ "\nAttention : point de base sur l'axe, rayon d'orbite nul."))
+    ;; --- Construction du niveau ------------------------------------------------------
+    (setq grp (aorb:niveau doc spc (append grp body) c a suit base n stp))
 
-  ;; --- 8. Satellites (la Lune) --------------------------------------------------
-  (princ "\nSelectionnez les satellites (la Lune) <Aucun> :")
-  (if (setq ssm (ssget "_:L"))
-    (progn
-      (setq mobjs (aorb:ss->lst ssm)
-            db    (aorb:defbase mobjs)
-            bm    (aorb:pointbase "Point de base des satellites" (car db) (cadr db))
-            lb:*aorb-nm* (aorb:getnum "Nombre de satellites par element" lb:*aorb-nm* 'int 6)
-            nm    lb:*aorb-nm*
-            lb:*aorb-mstep* (aorb:getnum "Avance du satellite par element (degres)"
-                                         lb:*aorb-mstep* 'real 0)
-            mstep (* pi (/ lb:*aorb-mstep* 180.0))
-            offv  (aorb:v- bm base))))
+    ;; --- Niveau superieur ? ------------------------------------------------------------
+    (initget "Oui Non")
+    (setq r (getkword (strcat "\nAjouter un niveau superieur (ex. " (aorb:nom-corps (1+ k))
+                              " autour de " (aorb:nom-axe (1+ k)) ") [Oui/Non] <Non> : "))
+          encore (= r "Oui")))
 
-  (setq total (* n nl (if mobjs (1+ nm) 1)))
-  (if (> total 10000)
-    (progn (princ (strcat "\nTrop d'elements (" (itoa total) " > 10000).")) (exit)))
-
-  ;; --- 9. Construction : copies d'abord, sources (indice 0) en dernier ----------
-  ;; axe propre initial : axe orbital incline de TILT vers la direction du rayon
-  (setq u  (aorb:perp a (aorb:v- base c))
-        s0 (aorb:v+ (aorb:v* (cos tilt) a) (aorb:v* (sin tilt) u)))
-
-  (setq l nl)
-  (while (>= (setq l (1- l)) 0)
-    (setq i n)
-    (while (>= (setq i (1- i)) 0)
-      (setq k    (+ (* l n) i)
-            phi  (+ (* i stp) (* l twist))
-            pt   (aorb:v+ (aorb:rotpt base c a phi)
-                          (aorb:v* (+ (* l dz) (* i hel)) a))
-            sdir (if suit (aorb:rotvec s0 a phi) s0))
-
-      ;; satellites de cet element
-      (if mobjs
-        (progn
-          (setq off (if suit (aorb:rotvec offv a phi) offv)
-                j   nm)
-          (while (>= (setq j (1- j)) 0)
-            (setq theta (+ (* j (/ (* 2.0 pi) nm)) (* k mstep))
-                  pm    (aorb:v+ pt (aorb:rotvec off a theta)))
-            (aorb:placer (if (and (zerop k) (zerop j)) mobjs (aorb:copie doc spc mobjs))
-                         bm pm a (if suit (+ phi theta) 0.0) a 0.0))))
-
-      ;; l'element lui-meme
-      (aorb:placer (if (zerop k) objs (aorb:copie doc spc objs))
-                   base pt a (if suit phi 0.0) sdir (* k spin))))
-
-  (princ (strcat "\n" (itoa total) " groupe(s) d'objets en reseau orbital 3D."))
+  (princ (strcat "\nReseau orbital termine : " (itoa (length grp)) " objet(s) au total."))
   (lb:fin nil)
 )
 
