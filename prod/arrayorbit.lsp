@@ -52,7 +52,7 @@
       (princ (strcat "\n** Erreur : " msg " **")))
     (princ)))
 
-(lb:enregistrer "AORB""Reseau orbital 3D autour d'un axe (axe fixe/suit, niveaux, satellites)")
+(lb:enregistrer "AORB" "Reseau orbital 3D par niveaux (Lune -> Terre -> Soleil), axe fixe/suit")
 
 ;;; --- Valeurs par defaut ----------------------------------------------------
 (or lb:*aorb-mode* (setq lb:*aorb-mode* "Fixe"))
@@ -218,14 +218,20 @@
     (princ (strcat "\n--- Niveau " (itoa k) " ---"))
 
     ;; --- 1. Objets qui orbitent -----------------------------------------------
-    (princ (strcat "\nSelectionnez les objets qui orbitent (ex. " (aorb:nom-corps k) ") :"))
-    (if (not (setq ss (ssget "_:L"))) (exit))
+    ;; Niveau 2+ : Entree = faire tourner l'ensemble deja construit, sans ajout
+    (princ (strcat "\nSelectionnez les objets qui orbitent (ex. " (aorb:nom-corps k) ")"
+                   (if grp " <Entree = ensemble deja construit seul>" "")
+                   " :"))
+    (setq ss (ssget "_:L"))
+    (if (and (not ss) (not grp)) (exit))
     (setq hs   (mapcar 'vla-get-Handle grp)
-          body (vl-remove-if '(lambda (o) (member (vla-get-Handle o) hs))
-                             (aorb:ss->lst ss)))
-    (if (not body)
-      (progn (princ "\nCes objets font deja partie du reseau.") (exit)))
-    (setq db   (aorb:defbase body)
+          body (if ss
+                 (vl-remove-if '(lambda (o) (member (vla-get-Handle o) hs))
+                               (aorb:ss->lst ss))))
+    (if (and ss (not body))
+      (princ "\nCes objets font deja partie du reseau : ensemble existant seul."))
+    ;; point de base : centre des nouveaux objets (ou de l'ensemble existant)
+    (setq db   (aorb:defbase (if body body grp))
           base (car db))
 
     ;; --- 2. Axe -------------------------------------------------------------------
@@ -235,8 +241,6 @@
           v (aorb:v- base c)
           rayon (sqrt (aorb:dot (aorb:v- v (aorb:v* (aorb:dot v a) a))
                                 (aorb:v- v (aorb:v* (aorb:dot v a) a)))))
-    (if (< rayon 1e-9)
-      (princ "\nAttention : les objets sont sur l'axe (rayon nul), la translation sera nulle."))
 
     ;; --- 3. Fixe / Suit ----------------------------------------------------------------
     (initget "Fixe Suit")
@@ -244,6 +248,8 @@
            (cond ((getkword (strcat "\nL'axe [Fixe/Suit la rotation] <" lb:*aorb-mode* "> : ")))
                  (lb:*aorb-mode*))
           suit (= lb:*aorb-mode* "Suit"))
+    (if (and (not suit) (< rayon 1e-9))
+      (princ "\nAttention : objets centres sur l'axe en mode Fixe, les copies seront superposees."))
 
     ;; --- 4. Nombre total (original + copies) ---------------------------------------
     (setq n (aorb:getnum "Nombre total d'elements (original + copies)" lb:*aorb-nb* 'int 6))
