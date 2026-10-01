@@ -26,7 +26,33 @@
 
 (vl-load-com)
 
-(lb:enregistrer "AORB" "Reseau orbital 3D autour d'un axe (axe fixe/suit, niveaux, satellites)")
+;;; --- Mode autonome : si le noyau (core/lb-core.lsp) n'est pas charge, ---------
+;;; --- definitions minimales des fonctions lb: utilisees ici -------------------
+(if (not lb:enregistrer)
+  (defun lb:enregistrer (cmd desc) cmd))
+
+(if (not lb:doc)
+  (defun lb:doc () (vla-get-ActiveDocument (vlax-get-acad-object))))
+
+(if (not lb:debut)
+  (defun lb:debut (vars)
+    (setq lb:*sysvars* (mapcar '(lambda (v) (cons v (getvar v))) vars))
+    (vla-EndUndoMark (lb:doc))
+    (vla-StartUndoMark (lb:doc))
+    (princ)))
+
+(if (not lb:fin)
+  (defun lb:fin (msg)
+    (foreach p lb:*sysvars*
+      (if (cdr p) (setvar (car p) (cdr p))))
+    (setq lb:*sysvars* nil)
+    (vla-EndUndoMark (lb:doc))
+    (if (and msg
+             (not (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*EXIT*,*ANNUL*,*QUIT*")))
+      (princ (strcat "\n** Erreur : " msg " **")))
+    (princ)))
+
+(lb:enregistrer "AORB""Reseau orbital 3D autour d'un axe (axe fixe/suit, niveaux, satellites)")
 
 ;;; --- Valeurs par defaut ----------------------------------------------------
 (or lb:*aorb-mode*  (setq lb:*aorb-mode*  "Fixe"))
